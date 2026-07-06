@@ -1,14 +1,10 @@
 <div align="center">
 
-# RefindPlus
+# rrEFInd
 
-A Boot Manager for Mac and PC
+A **r**otated **rEFInd** ... A boot manager for handheld devices with sideways-mounted screens
 
 <br>
-
-[![Release Version](https://img.shields.io/github/v/release/RefindPlusRepo/RefindPlus?style=for-the-badge&color=informational&label=current)](https://github.com/RefindPlusRepo/RefindPlus/releases)[![Release Date](https://img.shields.io/github/release-date/RefindPlusRepo/RefindPlus.svg?display_date=published_at&style=for-the-badge&color=informational&label=)](https://github.com/RefindPlusRepo/RefindPlus/releases)
-
-[![Coverity Scan](https://scan.coverity.com/projects/22695/badge.svg?flat=1)](https://scan.coverity.com/projects/22695)&nbsp;&nbsp;&nbsp;[![Codacy Grade](https://img.shields.io/codacy/grade/3d486c33f276471cbe95735bd28ea3e9?label=codacy)](https://app.codacy.com/gh/RefindPlusRepo/RefindPlus/dashboard)
 
 [![License Type](https://img.shields.io/badge/GPL%203.0/Later-blue?label=copies)](https://github.com/RefindPlusRepo/RefindPlus/blob/GOPFix/INFO.txt)
 
@@ -16,7 +12,29 @@ A Boot Manager for Mac and PC
 
 <br><br>
 
-## Overview
+## What is rrEFInd?
+
+rrEFInd is a fork of [RefindPlus](https://github.com/RefindPlusRepo/RefindPlus) (itself an enhanced fork of _`rEFInd`_) that adds **screen rotation** support.
+
+Many gaming handhelds and other portable devices (OneXPlayer, GPD, AYANEO etc.) use portrait-native display panels mounted sideways in the chassis. On such devices, firmware user interfaces, including standard rEFInd/RefindPlus, appear rotated 90 degrees and this typically cannot be corrected from the BIOS.
+
+rrEFInd is a drop-in replacement for rEFInd/RefindPlus: it supports everything they support (themes, icons, banners, configuration files, mouse and touch input and so on), but rotates the whole rendered interface, by 90 degrees anticlockwise by default, so that it displays upright on these devices. Touchscreen input coordinates are rotated to match.
+
+- Rotation is applied at the point pixels are written to the framebuffer, so themes and configurations designed for rEFInd/RefindPlus work unchanged. Design and specify resolutions in the orientation you actually see (typically landscape).
+- The direction is set with the `screen_rotation` token in the configuration file:
+  - `screen_rotation left` ... 90 degrees anticlockwise (**default** ... use when the stock menu appears rotated clockwise, that is, its top points at the right-hand edge of the device)
+  - `screen_rotation right` ... 90 degrees clockwise (use when the stock menu appears rotated anticlockwise)
+  - `screen_rotation inverted` ... 180 degrees
+  - `screen_rotation none` ... stock rEFInd/RefindPlus behaviour
+- Text-only mode (`textonly`) uses the firmware text console and is never rotated.
+
+Everything below this line is inherited from RefindPlus, on which rrEFInd is based ... All credit for the underlying boot manager goes to the [RefindPlus](https://github.com/RefindPlusRepo/RefindPlus) and [rEFInd](https://www.rodsbooks.com/refind/) projects.
+
+<br>
+
+---
+
+## RefindPlus Overview
 
 RefindPlus is a fork of _`rEFInd`_ that provides extended functionality via enhancements and fixes that include several Apple Mac and UEFI-PC related items that may be of interest to anyone requiring a boot manager for Mac and PC.
 

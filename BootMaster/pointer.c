@@ -480,6 +480,8 @@ BOOLEAN pdNotUsed (VOID) {
 EFI_STATUS pdUpdateState (VOID) {
     EFI_STATUS                 Status;
     UINTN                      Index;
+    UINTN                      Rotation;
+    UINTN                      ScaledPos;
     INT32                      TargetX;
     INT32                      TargetY;
     INT64                      TempINT64;
@@ -505,21 +507,86 @@ EFI_STATUS pdUpdateState (VOID) {
             );
             if (EFI_ERROR(Status)) continue; // 'for' loop
 
-            TempUINT64 = DivU64x64Remainder (
-                (UINT64) APointerState.CurrentX *
-                (UINT64) ScreenW,
-                (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxX,
-                NULL
-            );
-            State.X = Uint64ToUintn (TempUINT64);
+            // rrEFInd: Absolute pointer devices (touchscreens) report
+            //          coordinates in the physical panel orientation.
+            //          Map these onto the logical (rotated) screen.
+            Rotation = egGetScreenRotation();
+            switch (Rotation) {
+                case 90:
+                    // Physical Y Axis -> Logical X ... Physical X Axis -> Inverted Logical Y
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentY *
+                        (UINT64) ScreenW,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxY,
+                        NULL
+                    );
+                    State.X = Uint64ToUintn (TempUINT64);
 
-            TempUINT64 = DivU64x64Remainder (
-                (UINT64) APointerState.CurrentY *
-                (UINT64) ScreenH,
-                (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxY,
-                NULL
-            );
-            State.Y = Uint64ToUintn (TempUINT64);
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentX *
+                        (UINT64) ScreenH,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxX,
+                        NULL
+                    );
+                    ScaledPos = Uint64ToUintn (TempUINT64);
+                    State.Y = (ScaledPos < ScreenH) ? (ScreenH - 1 - ScaledPos) : 0;
+                break;
+                case 180:
+                    // Both Axes Inverted
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentX *
+                        (UINT64) ScreenW,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxX,
+                        NULL
+                    );
+                    ScaledPos = Uint64ToUintn (TempUINT64);
+                    State.X = (ScaledPos < ScreenW) ? (ScreenW - 1 - ScaledPos) : 0;
+
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentY *
+                        (UINT64) ScreenH,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxY,
+                        NULL
+                    );
+                    ScaledPos = Uint64ToUintn (TempUINT64);
+                    State.Y = (ScaledPos < ScreenH) ? (ScreenH - 1 - ScaledPos) : 0;
+                break;
+                case 270:
+                    // Physical Y Axis -> Inverted Logical X ... Physical X Axis -> Logical Y
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentY *
+                        (UINT64) ScreenW,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxY,
+                        NULL
+                    );
+                    ScaledPos = Uint64ToUintn (TempUINT64);
+                    State.X = (ScaledPos < ScreenW) ? (ScreenW - 1 - ScaledPos) : 0;
+
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentX *
+                        (UINT64) ScreenH,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxX,
+                        NULL
+                    );
+                    State.Y = Uint64ToUintn (TempUINT64);
+                break;
+                default:
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentX *
+                        (UINT64) ScreenW,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxX,
+                        NULL
+                    );
+                    State.X = Uint64ToUintn (TempUINT64);
+
+                    TempUINT64 = DivU64x64Remainder (
+                        (UINT64) APointerState.CurrentY *
+                        (UINT64) ScreenH,
+                        (UINT64) ProtocolA[Index]->Mode->AbsoluteMaxY,
+                        NULL
+                    );
+                    State.Y = Uint64ToUintn (TempUINT64);
+            } // switch
 
             State.Holding = (
                 APointerState.ActiveButtons & EFI_ABSP_TouchActive

@@ -161,6 +161,8 @@ REFIT_CONFIG GlobalConfig = {
     .RequestedTextMode         =   DONT_CHANGE_TEXT_MODE,
     .RequestedScreenWidth      =                       0,
     .RequestedScreenHeight     =                       0,
+    // rrEFInd: Rotate anticlockwise by default ... 'screen_rotation' token overrides
+    .ScreenRotation            =                     270,
     .BannerBottomEdge          =                       0,
     .DisableBootLogo           =                       0,
     .HideUIFlags               =                       0,

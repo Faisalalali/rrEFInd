@@ -871,9 +871,39 @@
 #
 # Uses the Maximum Screen Resolution When Commented Out
 #
+# NB: When 'screen_rotation' is active (as it is by default in rrEFInd),
+# specify the resolution as you see it (the rotated 'landscape' values).
+# For instance, on a 1080 x 1920 portrait panel mounted sideways in a
+# handheld device, specify 'resolution 1920 1080'.
+#
 #resolution 1024 768
 #resolution 1440 900
 #resolution 3
+
+# rrEFInd: Rotate the screen output.
+# Many handheld devices (GPD, AYANEO, OneXPlayer etc.) use portrait panels
+# mounted sideways, making boot menus appear rotated 90 degrees. This
+# option rotates everything drawn (background, icons, themes, banners,
+# mouse/touch input etc.) so that the menu appears upright.
+#
+# The value is the number of degrees the rendered image is rotated
+# CLOCKWISE before being written to the screen:
+#   none | 0                                     - No rotation (stock rEFInd behaviour)
+#   right | clockwise | cw | 90                  - Use when the unrotated menu appears
+#                                                  rotated anticlockwise (top of the menu
+#                                                  is on the LEFT side of the device)
+#   inverted | flip | 180                        - Use when the unrotated menu appears
+#                                                  upside down
+#   left | counterclockwise | anticlockwise |
+#   ccw | 270 | -90                              - Use when the unrotated menu appears
+#                                                  rotated clockwise (top of the menu
+#                                                  is on the RIGHT side of the device)
+#
+# NB: rrEFInd defaults to 'left' (anticlockwise) when commented out.
+#     Set 'screen_rotation none' to get stock rEFInd/RefindPlus behaviour.
+#     Text-only mode ('textonly') is never rotated.
+#
+#screen_rotation left
 
 # Which types of boot loaders to search, and in what order to display them:
 #  external      - External EFI disk based boot loaders ... USB/eSATA etc.

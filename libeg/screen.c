@@ -92,6 +92,328 @@ UINTN   SelectedGOP    =   0;
 UINTN   egScreenWidth  = 800;
 UINTN   egScreenHeight = 600;
 
+//
+// Screen Rotation Support (rrEFInd)
+//
+// 'GlobalConfig.ScreenRotation' holds the number of degrees the rendered
+// image is rotated clockwise before being written to the framebuffer.
+// The 'egScreenWidth' and 'egScreenHeight' globals always hold the
+// physical framebuffer dimensions. Under 90 or 270 degree rotation, the
+// rest of the program works with the logical (swapped) dimensions, as
+// returned by egGetScreenSize(), and all coordinates passed into the
+// egClearScreen/egDrawImage*/egCopyScreen* functions are in that logical
+// space. The functions below convert logical coordinates and pixel
+// buffers to physical ones at the point where GOP/UGA 'Blt' is called.
+//
+
+static EG_PIXEL *RotationPool     = NULL;
+static UINTN     RotationPoolSize = 0;
+
+UINTN egGetScreenRotation (VOID) {
+    UINTN Rotation = GlobalConfig.ScreenRotation;
+
+    return (
+        Rotation == 90 || Rotation == 180 || Rotation == 270
+    ) ? Rotation : 0;
+} // UINTN egGetScreenRotation()
+
+// Logical screen size ... Physical size with axes swapped when rotated 90/270
+static
+VOID egRotLogicalSize (
+    OUT UINTN *Width,
+    OUT UINTN *Height
+) {
+    UINTN Rotation = egGetScreenRotation();
+
+    if (Rotation == 90 || Rotation == 270) {
+        *Width  = egScreenHeight;
+        *Height = egScreenWidth;
+    }
+    else {
+        *Width  = egScreenWidth;
+        *Height = egScreenHeight;
+    }
+} // static VOID egRotLogicalSize()
+
+// Scratch buffer for rotated pixel data ... Grown on demand and reused
+static
+EG_PIXEL * egRotGetPool (
+    IN UINTN NumPixels
+) {
+    if (RotationPoolSize < NumPixels) {
+        MY_FREE_POOL(RotationPool);
+        RotationPool = AllocatePool (NumPixels * sizeof (EG_PIXEL));
+        RotationPoolSize = (RotationPool != NULL) ? NumPixels : 0;
+    }
+
+    return RotationPool;
+} // static EG_PIXEL * egRotGetPool()
+
+// Copy a 'Width x Height' rectangle at 'SrcX/SrcY' from 'Src' (row length
+// 'SrcLine' pixels) into 'Dst', rotated clockwise by 'Rotation' degrees.
+// 'Dst' is 'Height x Width' pixels for 90/270 and 'Width x Height' otherwise.
+static
+VOID egRotateCopy (
+    IN  const EG_PIXEL *Src,
+    IN  UINTN           SrcLine,
+    IN  UINTN           SrcX,
+    IN  UINTN           SrcY,
+    OUT EG_PIXEL       *Dst,
+    IN  UINTN           Width,
+    IN  UINTN           Height,
+    IN  UINTN           Rotation
+) {
+    UINTN           x;
+    UINTN           y;
+    const EG_PIXEL *Row;
+
+    for (y = 0; y < Height; y++) {
+        Row = Src + ((SrcY + y) * SrcLine) + SrcX;
+        switch (Rotation) {
+            case 90:
+                for (x = 0; x < Width; x++) {
+                    Dst[(x * Height) + (Height - 1 - y)] = Row[x];
+                }
+            break;
+            case 180:
+                for (x = 0; x < Width; x++) {
+                    Dst[((Height - 1 - y) * Width) + (Width - 1 - x)] = Row[x];
+                }
+            break;
+            case 270:
+                for (x = 0; x < Width; x++) {
+                    Dst[((Width - 1 - x) * Height) + y] = Row[x];
+                }
+            break;
+            default:
+                for (x = 0; x < Width; x++) {
+                    Dst[(y * Width) + x] = Row[x];
+                }
+        } // switch
+    } // for
+} // static VOID egRotateCopy()
+
+// Map the top left corner of a logical 'Width x Height' rectangle at
+// 'XPos/YPos' onto the physical screen. The physical rectangle size is
+// 'Height x Width' for 90/270 and 'Width x Height' otherwise.
+static
+VOID egRotTransformRect (
+    IN  UINTN  Rotation,
+    IN  UINTN  XPos,
+    IN  UINTN  YPos,
+    IN  UINTN  Width,
+    IN  UINTN  Height,
+    OUT UINTN *PhysX,
+    OUT UINTN *PhysY
+) {
+    switch (Rotation) {
+        case 90:
+            *PhysX = egScreenWidth  - (YPos + Height);
+            *PhysY = XPos;
+        break;
+        case 180:
+            *PhysX = egScreenWidth  - (XPos + Width);
+            *PhysY = egScreenHeight - (YPos + Height);
+        break;
+        case 270:
+            *PhysX = YPos;
+            *PhysY = egScreenHeight - (XPos + Width);
+        break;
+        default:
+            *PhysX = XPos;
+            *PhysY = YPos;
+    } // switch
+} // static VOID egRotTransformRect()
+
+// Raw 'Blt' in physical screen coordinates via GOP or UGA
+static
+EFI_STATUS egRotRawBlt (
+    IN OUT VOID                              *Buffer,
+    IN     EFI_GRAPHICS_OUTPUT_BLT_OPERATION  Operation,
+    IN     UINTN                              SourceX,
+    IN     UINTN                              SourceY,
+    IN     UINTN                              DestX,
+    IN     UINTN                              DestY,
+    IN     UINTN                              Width,
+    IN     UINTN                              Height,
+    IN     UINTN                              Delta
+) {
+    if (GOPDraw != NULL) {
+        // NB: EFI_GRAPHICS_OUTPUT_BLT_PIXEL and EFI_UGA_PIXEL share the
+        // same layout and the operation enums share the same numbering.
+        return REFIT_CALL_10_WRAPPER(
+            GOPDraw->Blt, GOPDraw,
+            (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *) Buffer, Operation,
+            SourceX, SourceY,
+            DestX, DestY,
+            Width, Height, Delta
+        );
+    }
+
+    if (UGADraw != NULL) {
+        return REFIT_CALL_10_WRAPPER(
+            UGADraw->Blt, UGADraw,
+            (EFI_UGA_PIXEL *) Buffer, (EFI_UGA_BLT_OPERATION) Operation,
+            SourceX, SourceY,
+            DestX, DestY,
+            Width, Height, Delta
+        );
+    }
+
+    return EFI_UNSUPPORTED;
+} // static EFI_STATUS egRotRawBlt()
+
+// Clip a logical rectangle to the logical screen
+// Returns FALSE when nothing is left to draw
+static
+BOOLEAN egRotClipRect (
+    IN     UINTN  XPos,
+    IN     UINTN  YPos,
+    IN OUT UINTN *Width,
+    IN OUT UINTN *Height
+) {
+    UINTN LogicalW;
+    UINTN LogicalH;
+
+    egRotLogicalSize (&LogicalW, &LogicalH);
+
+    if (XPos >= LogicalW || YPos >= LogicalH) {
+        return FALSE;
+    }
+    if (XPos + *Width  > LogicalW) *Width  = LogicalW - XPos;
+    if (YPos + *Height > LogicalH) *Height = LogicalH - YPos;
+
+    return (*Width != 0 && *Height != 0);
+} // static BOOLEAN egRotClipRect()
+
+// Write a 'Width x Height' rectangle at 'SrcX/SrcY' from 'PixelData'
+// (row length 'SrcLine' pixels) to the logical position 'XPos/YPos',
+// rotating the pixels to the physical orientation as required.
+static
+VOID egRotBltBufferToVideo (
+    IN EG_PIXEL *PixelData,
+    IN UINTN     SrcLine,
+    IN UINTN     SrcX,
+    IN UINTN     SrcY,
+    IN UINTN     XPos,
+    IN UINTN     YPos,
+    IN UINTN     Width,
+    IN UINTN     Height
+) {
+    UINTN     Rotation;
+    UINTN     PhysX;
+    UINTN     PhysY;
+    EG_PIXEL *Rotated;
+
+    if (!egRotClipRect (XPos, YPos, &Width, &Height)) {
+        return;
+    }
+
+    Rotation = egGetScreenRotation();
+    if (Rotation == 0) {
+        egRotRawBlt (
+            PixelData, EfiBltBufferToVideo,
+            SrcX, SrcY,
+            XPos, YPos,
+            Width, Height,
+            SrcLine * sizeof (EG_PIXEL)
+        );
+
+        return;
+    }
+
+    Rotated = egRotGetPool (Width * Height);
+    if (Rotated == NULL) {
+        return;
+    }
+
+    egRotateCopy (
+        PixelData, SrcLine,
+        SrcX, SrcY,
+        Rotated,
+        Width, Height, Rotation
+    );
+    egRotTransformRect (
+        Rotation,
+        XPos, YPos,
+        Width, Height,
+        &PhysX, &PhysY
+    );
+
+    egRotRawBlt (
+        Rotated, EfiBltBufferToVideo,
+        0, 0,
+        PhysX, PhysY,
+        (Rotation == 180) ? Width  : Height,
+        (Rotation == 180) ? Height : Width,
+        0
+    );
+} // static VOID egRotBltBufferToVideo()
+
+// Read the logical 'Width x Height' rectangle at 'XPos/YPos' from the
+// screen into 'PixelData', un-rotating the pixels as required.
+static
+VOID egRotBltVideoToBuffer (
+    OUT EG_PIXEL *PixelData,
+    IN  UINTN     XPos,
+    IN  UINTN     YPos,
+    IN  UINTN     Width,
+    IN  UINTN     Height
+) {
+    UINTN     Rotation;
+    UINTN     PhysX;
+    UINTN     PhysY;
+    UINTN     PhysW;
+    UINTN     PhysH;
+    EG_PIXEL *Raw;
+
+    if (!egRotClipRect (XPos, YPos, &Width, &Height)) {
+        return;
+    }
+
+    Rotation = egGetScreenRotation();
+    if (Rotation == 0) {
+        egRotRawBlt (
+            PixelData, EfiBltVideoToBltBuffer,
+            XPos, YPos,
+            0, 0,
+            Width, Height, 0
+        );
+
+        return;
+    }
+
+    Raw = egRotGetPool (Width * Height);
+    if (Raw == NULL) {
+        return;
+    }
+
+    PhysW = (Rotation == 180) ? Width  : Height;
+    PhysH = (Rotation == 180) ? Height : Width;
+
+    egRotTransformRect (
+        Rotation,
+        XPos, YPos,
+        Width, Height,
+        &PhysX, &PhysY
+    );
+    egRotRawBlt (
+        Raw, EfiBltVideoToBltBuffer,
+        PhysX, PhysY,
+        0, 0,
+        PhysW, PhysH, 0
+    );
+
+    // Rotate back to the logical orientation
+    egRotateCopy (
+        Raw, PhysW,
+        0, 0,
+        PixelData,
+        PhysW, PhysH,
+        (360 - Rotation) % 360
+    );
+} // static VOID egRotBltVideoToBuffer()
+
 
 /**
   The ForceVideoMode function below was adapted from UefiSeven
@@ -1719,13 +2041,17 @@ VOID egGetScreenSize (
     OUT UINTN *ScreenWidth,
     OUT UINTN *ScreenHeight
 ) {
+    UINTN LogicalW;
+    UINTN LogicalH;
+
     egDetermineScreenSize();
+    egRotLogicalSize (&LogicalW, &LogicalH);
 
     if (ScreenWidth != NULL) {
-        *ScreenWidth = egScreenWidth;
+        *ScreenWidth = LogicalW;
     }
     if (ScreenHeight != NULL) {
-        *ScreenHeight = egScreenHeight;
+        *ScreenHeight = LogicalH;
     }
 } // VOID egGetScreenSize()
 
@@ -1877,6 +2203,7 @@ VOID egInitScreen (VOID) {
     EFI_STATUS                             Status;
     EFI_STATUS                             XFlag;
     UINTN                                  i;
+    UINTN                                  Rotation;
     UINTN                                  HandleCount;
     UINTN                                  SizeOfInfo;
     UINT32                                 SumOld;
@@ -2338,8 +2665,17 @@ VOID egInitScreen (VOID) {
                 egScreenWidth  = GOPDraw->Mode->Info->HorizontalResolution;
             }
             else {
-                egScreenWidth  = GlobalConfig.RequestedScreenWidth;
-                egScreenHeight = GlobalConfig.RequestedScreenHeight;
+                // Requested values are in logical (rotated) terms
+                // while 'egScreenWidth/egScreenHeight' are physical
+                Rotation = egGetScreenRotation();
+                if (Rotation == 90 || Rotation == 270) {
+                    egScreenWidth  = GlobalConfig.RequestedScreenHeight;
+                    egScreenHeight = GlobalConfig.RequestedScreenWidth;
+                }
+                else {
+                    egScreenWidth  = GlobalConfig.RequestedScreenWidth;
+                    egScreenHeight = GlobalConfig.RequestedScreenHeight;
+                }
             }
         } while (0); // This 'loop' only runs once
     } // if GOPDraw
@@ -2454,8 +2790,19 @@ VOID egInitScreen (VOID) {
             }
 
             if (FlagUGA) {
-                egScreenWidth  = GlobalConfig.RequestedScreenWidth  =  Width;
-                egScreenHeight = GlobalConfig.RequestedScreenHeight = Height;
+                egScreenWidth  =  Width;
+                egScreenHeight = Height;
+
+                // Requested values are in logical (rotated) terms
+                Rotation = egGetScreenRotation();
+                if (Rotation == 90 || Rotation == 270) {
+                    GlobalConfig.RequestedScreenWidth  = Height;
+                    GlobalConfig.RequestedScreenHeight =  Width;
+                }
+                else {
+                    GlobalConfig.RequestedScreenWidth  =  Width;
+                    GlobalConfig.RequestedScreenHeight = Height;
+                }
 
                 #if REFIT_DEBUG > 0
                 ALT_LOG(1, LOG_LINE_NORMAL, L"%s", MsgStr);
@@ -2691,7 +3038,10 @@ BOOLEAN egSetScreenSize (
 
     EFI_STATUS   Status;
     BOOLEAN      ModeSet;
+    BOOLEAN      RotSwap;
     UINTN        Size;
+    UINTN        Rotation;
+    UINTN        TempSwap;
     UINT32       ModeNum;
     UINT32       CurrentModeNum;
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *Info;
@@ -2716,6 +3066,18 @@ BOOLEAN egSetScreenSize (
     LOG_MSG("%s  - %s", OffsetNext, MsgStr);
     MY_FREE_POOL(MsgStr);
     #endif
+
+    // The requested resolution is in logical (rotated) terms
+    // Convert to physical terms for GOP mode matching
+    // NB: Skipped when *ScreenHeight is 0 (*ScreenWidth is a mode number)
+    RotSwap  = FALSE;
+    Rotation = egGetScreenRotation();
+    if ((Rotation == 90 || Rotation == 270) && *ScreenHeight != 0) {
+        TempSwap      = *ScreenWidth;
+        *ScreenWidth  = *ScreenHeight;
+        *ScreenHeight =  TempSwap;
+        RotSwap       =  TRUE;
+    }
 
     ModeSet = FALSE;
     CurrentModeNum = GOPDraw->Mode->Mode;
@@ -2936,6 +3298,15 @@ BOOLEAN egSetScreenSize (
     } // while
 
 ExitFunc:
+    // Convert the physical resolution back to logical (rotated) terms
+    if ((Rotation == 90 || Rotation == 270) &&
+        (RotSwap || (ModeSet && *ScreenHeight != 0))
+    ) {
+        TempSwap      = *ScreenWidth;
+        *ScreenWidth  = *ScreenHeight;
+        *ScreenHeight =  TempSwap;
+    }
+
     #if REFIT_DEBUG > 0
     LOG_MSG("\n\n");
     #endif
@@ -3056,6 +3427,12 @@ BOOLEAN egSetTextMode (
 CHAR16 * egScreenDescription (VOID) {
     CHAR16  *GraphicsInfo;
     CHAR16  *TextInfo;
+    UINTN    LogicalW;
+    UINTN    LogicalH;
+    UINTN    Rotation;
+
+    egRotLogicalSize (&LogicalW, &LogicalH);
+    Rotation = egGetScreenRotation();
 
     if (!egHasGraphics) {
         GraphicsInfo = PoolPrint (
@@ -3067,19 +3444,31 @@ CHAR16 * egScreenDescription (VOID) {
         if (GOPDraw != NULL) {
             GraphicsInfo = PoolPrint (
                 L"Graphics Output Protocol @ %d x %d",
-                egScreenWidth, egScreenHeight
+                LogicalW, LogicalH
             );
         }
         else if (UGADraw != NULL) {
             GraphicsInfo = PoolPrint (
                 L"Universal Graphics Adapter @ %d x %d",
-                egScreenWidth, egScreenHeight
+                LogicalW, LogicalH
             );
         }
         else {
             GraphicsInfo = StrDuplicate (
                 L"Could *NOT* Get Graphics Details"
             );
+        }
+
+        if (Rotation != 0 && (GOPDraw != NULL || UGADraw != NULL)) {
+            TextInfo = PoolPrint (
+                L"(Rotated %d Degrees)",
+                Rotation
+            );
+            MergeStrings (
+                &GraphicsInfo,
+                TextInfo, L' '
+            );
+            MY_FREE_POOL(TextInfo);
         }
 
         if (!AllowGraphicsMode) {
@@ -3261,16 +3650,20 @@ VOID egDrawImage (
 ) {
     BOOLEAN   SetImage;
     EG_IMAGE *CompImage;
+    UINTN     LogicalW;
+    UINTN     LogicalH;
+
+    egRotLogicalSize (&LogicalW, &LogicalH);
 
     // DA-TAg: Investigate This
     //         Weird seemingly redundant tests because some placement code can "wrap around" and
     //         send "negative" values, which of course become very large unsigned ints that can then
     //         wrap around AGAIN if values are added to them.
-    if (!egHasGraphics                                ||
-        ScreenPosX > egScreenWidth                    ||
-        ScreenPosY > egScreenHeight                   ||
-        (ScreenPosX + Image->Width)  > egScreenWidth  ||
-        (ScreenPosY + Image->Height) > egScreenHeight
+    if (!egHasGraphics                          ||
+        ScreenPosX > LogicalW                   ||
+        ScreenPosY > LogicalH                   ||
+        (ScreenPosX + Image->Width)  > LogicalW ||
+        (ScreenPosY + Image->Height) > LogicalH
     ) {
         return;
     }
@@ -3278,8 +3671,8 @@ VOID egDrawImage (
     SetImage = FALSE;
     if (GlobalConfig.ScreenBackground == NULL ||
         (
-            Image->Width  == egScreenWidth &&
-            Image->Height == egScreenHeight
+            Image->Width  == LogicalW &&
+            Image->Height == LogicalH
         )
     ) {
         CompImage = Image;
@@ -3308,26 +3701,13 @@ VOID egDrawImage (
         SetImage = TRUE;
     }
 
-    if (GOPDraw != NULL) {
-        REFIT_CALL_10_WRAPPER(
-            GOPDraw->Blt, GOPDraw,
-            (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *) CompImage->PixelData,
-            EfiBltBufferToVideo,
-            0, 0,
-            ScreenPosX, ScreenPosY,
-            CompImage->Width, CompImage->Height, 0
-        );
-    }
-    else if (UGADraw != NULL) {
-        REFIT_CALL_10_WRAPPER(
-            UGADraw->Blt, UGADraw,
-            (EFI_UGA_PIXEL *) CompImage->PixelData,
-            EfiUgaBltBufferToVideo,
-            0, 0,
-            ScreenPosX, ScreenPosY,
-            CompImage->Width, CompImage->Height, 0
-        );
-    }
+    egRotBltBufferToVideo (
+        CompImage->PixelData,
+        CompImage->Width,
+        0, 0,
+        ScreenPosX, ScreenPosY,
+        CompImage->Width, CompImage->Height
+    );
 
     if (SetImage) {
         MY_FREE_IMAGE(CompImage);
@@ -3388,28 +3768,13 @@ VOID egDrawImageArea (
         return;
     }
 
-    if (GOPDraw != NULL) {
-        REFIT_CALL_10_WRAPPER(
-            GOPDraw->Blt, GOPDraw,
-            (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *) Image->PixelData,
-            EfiBltBufferToVideo,
-            AreaPosX, AreaPosY,
-            ScreenPosX, ScreenPosY,
-            AreaWidth, AreaHeight,
-            Image->Width * 4
-        );
-    }
-    else {
-        REFIT_CALL_10_WRAPPER(
-            UGADraw->Blt, UGADraw,
-            (EFI_UGA_PIXEL *) Image->PixelData,
-            EfiUgaBltBufferToVideo,
-            AreaPosX, AreaPosY,
-            ScreenPosX, ScreenPosY,
-            AreaWidth, AreaHeight,
-            Image->Width * 4
-        );
-    }
+    egRotBltBufferToVideo (
+        Image->PixelData,
+        Image->Width,
+        AreaPosX, AreaPosY,
+        ScreenPosX, ScreenPosY,
+        AreaWidth, AreaHeight
+    );
 } // VOID egDrawImageArea()
 
 static
@@ -3424,6 +3789,8 @@ VOID egDisplayMessageEx (
     UINTN            BoxWidth;
     UINTN            BoxHeight;
     UINTN            HeightFix;
+    UINTN            LogicalW;
+    UINTN            LogicalH;
     EG_IMAGE        *Box;
 
     static UINTN     PosX      = 0;
@@ -3436,18 +3803,20 @@ VOID egDisplayMessageEx (
         return;
     }
 
+    egRotLogicalSize (&LogicalW, &LogicalH);
+
     egMeasureText (
         Text, &BoxWidth, &BoxHeight
     );
 
     BoxWidth  += 14;
-    if (BoxWidth > egScreenWidth) {
-        BoxWidth = egScreenWidth;
+    if (BoxWidth > LogicalW) {
+        BoxWidth = LogicalW;
     }
 
     BoxHeight *=  2;
-    if (BoxHeight > egScreenHeight) {
-        BoxHeight = egScreenHeight;
+    if (BoxHeight > LogicalH) {
+        BoxHeight = LogicalH;
     }
     HeightFix = (
         BoxHeight + (BoxHeight / 10)
@@ -3474,10 +3843,10 @@ VOID egDisplayMessageEx (
     }
 
     switch (PositionCode) {
-        case TOP:    PosY  = 1;                                  break;
-        case CENTER: PosY  = ((egScreenHeight - BoxHeight) / 2); break;
-        case BOTTOM: PosY  = (egScreenHeight - (BoxHeight * 2)); break;
-        default:     PosY += HeightFix;                          break; // NEXTLINE
+        case TOP:    PosY  = 1;                            break;
+        case CENTER: PosY  = ((LogicalH - BoxHeight) / 2); break;
+        case BOTTOM: PosY  = (LogicalH - (BoxHeight * 2)); break;
+        default:     PosY += HeightFix;                    break; // NEXTLINE
     } // switch
 
     if (ResetPosition) {
@@ -3491,7 +3860,7 @@ VOID egDisplayMessageEx (
         MY_FREE_IMAGE(OldBox);
         if (BackgroundArea) {
             PosX = (
-                egScreenWidth - BoxWidth
+                LogicalW - BoxWidth
             ) / 2;
 
             OldBox = egCopyScreenArea (
@@ -3518,7 +3887,7 @@ VOID egDisplayMessageEx (
     }
 
     if (PositionCode == CENTER ||
-        PosY >= egScreenHeight - (BoxHeight * 5)
+        PosY >= LogicalH - (BoxHeight * 5)
     ) {
         PosY = 1;
     }
@@ -3583,10 +3952,15 @@ VOID egDisplayMessage (
 // Copy the current contents of the display into an EG_IMAGE.
 // Returns pointer if successful, NULL if not.
 EG_IMAGE * egCopyScreen (VOID) {
+   UINTN LogicalW;
+   UINTN LogicalH;
+
+   egRotLogicalSize (&LogicalW, &LogicalH);
+
    return egCopyScreenArea (
        0, 0,
-       egScreenWidth,
-       egScreenHeight
+       LogicalW,
+       LogicalH
    );
 } // EG_IMAGE * egCopyScreen()
 
@@ -3612,26 +3986,11 @@ EG_IMAGE * egCopyScreenArea (
    }
 
    // Get Full Screen Image
-   if (GOPDraw != NULL) {
-       REFIT_CALL_10_WRAPPER(
-           GOPDraw->Blt, GOPDraw,
-           (EFI_GRAPHICS_OUTPUT_BLT_PIXEL *) Image->PixelData,
-           EfiBltVideoToBltBuffer,
-           XPos, YPos,
-           0, 0,
-           Image->Width, Image->Height, 0
-       );
-   }
-   else {
-       REFIT_CALL_10_WRAPPER(
-           UGADraw->Blt, UGADraw,
-           (EFI_UGA_PIXEL *) Image->PixelData,
-           EfiUgaVideoToBltBuffer,
-           XPos, YPos,
-           0, 0,
-           Image->Width, Image->Height, 0
-       );
-   }
+   egRotBltVideoToBuffer (
+       Image->PixelData,
+       XPos, YPos,
+       Image->Width, Image->Height
+   );
 
    return Image;
 } // EG_IMAGE * egCopyScreenArea()

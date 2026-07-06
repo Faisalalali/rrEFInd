@@ -3590,6 +3590,65 @@ VOID ReadConfig (
             }
         }
         else if (
+            TokenCount == 2 &&
+            (
+                MyStriCmp (TokenList[0], L"screen_rotation") ||
+                MyStriCmp (TokenList[0], L"rotation")
+            )
+        ) {
+            #if REFIT_DEBUG > 0
+            if (!OuterLoop) {
+                UpdatedToken = LogUpdate (
+                    TokenList[0], NotRunBefore, TRUE
+                );
+            }
+            #endif
+
+            // rrEFInd: Number of degrees the rendered image is rotated
+            //          clockwise before being written to the framebuffer
+            if (MyStriCmp (TokenList[1], L"none")     ||
+                MyStriCmp (TokenList[1], L"off")      ||
+                MyStriCmp (TokenList[1], L"disabled") ||
+                MyStriCmp (TokenList[1], L"0")
+            ) {
+                GlobalConfig.ScreenRotation = 0;
+            }
+            else if (
+                MyStriCmp (TokenList[1], L"right")     ||
+                MyStriCmp (TokenList[1], L"clockwise") ||
+                MyStriCmp (TokenList[1], L"cw")        ||
+                MyStriCmp (TokenList[1], L"90")
+            ) {
+                GlobalConfig.ScreenRotation = 90;
+            }
+            else if (
+                MyStriCmp (TokenList[1], L"inverted") ||
+                MyStriCmp (TokenList[1], L"flip")     ||
+                MyStriCmp (TokenList[1], L"180")
+            ) {
+                GlobalConfig.ScreenRotation = 180;
+            }
+            else if (
+                MyStriCmp (TokenList[1], L"left")             ||
+                MyStriCmp (TokenList[1], L"counterclockwise") ||
+                MyStriCmp (TokenList[1], L"anticlockwise")    ||
+                MyStriCmp (TokenList[1], L"ccw")              ||
+                MyStriCmp (TokenList[1], L"270")               ||
+                MyStriCmp (TokenList[1], L"-90")
+            ) {
+                GlobalConfig.ScreenRotation = 270;
+            }
+            #if REFIT_DEBUG > 0
+            else {
+                LOG_MSG(
+                    "** WARN: Invalid 'screen_rotation' Setting:- '%s'",
+                    TokenList[1]
+                );
+                LOG_MSG("\n\n");
+            }
+            #endif
+        }
+        else if (
             MyStriCmp (TokenList[0], L"screensaver")
         ) {
             #if REFIT_DEBUG > 0

@@ -560,6 +560,7 @@ typedef struct {
     UINTN                       RequestedTextMode;
     UINTN                       RequestedScreenWidth;
     UINTN                       RequestedScreenHeight;
+    UINTN                       ScreenRotation;
     UINTN                       BannerBottomEdge;
     UINTN                       DisableBootLogo;
     UINTN                       HideUIFlags;
