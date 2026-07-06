@@ -106,6 +106,7 @@ VOID egLoadFont (IN CHAR16 *Filename);
 VOID egClearScreen (IN EG_PIXEL *Color);
 VOID egFillImage (IN OUT EG_IMAGE *CompImage, IN EG_PIXEL *Color);
 VOID egGetScreenSize (OUT UINTN *ScreenWidth, OUT UINTN *ScreenHeight);
+UINTN egGetScreenRotation (VOID);
 VOID egMeasureText (IN CHAR16 *Text, OUT UINTN *Width, OUT UINTN *Height);
 VOID egDrawImage (IN EG_IMAGE *Image, IN UINTN ScreenPosX, IN UINTN ScreenPosY);
 VOID egDisplayMessage (
